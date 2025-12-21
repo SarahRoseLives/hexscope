@@ -44,7 +44,6 @@ struct HexApp {
     // (file_index, byte_offset)
     cursor: Option<(usize, usize)>,
     // If true, we are editing the lower nibble (second digit).
-    // If false, we are editing the upper nibble (first digit).
     cursor_low_nibble: bool,
 
     // Search
@@ -101,18 +100,20 @@ impl HexApp {
         if slot_index == 0 && self.files[1].is_some() {
             self.files[0] = self.files[1].take();
         }
+        // If cursor was in this file, clear it
+        if let Some((c_idx, _)) = self.cursor {
+            if c_idx == slot_index { self.cursor = None; }
+        }
     }
 
-    // --- Core Logic: Search & Jump ---
+    // --- Search & Jump ---
 
     fn perform_search(&mut self) {
-        // We always search in the "active" file (where the cursor is), or default to File 0
         let target_idx = self.cursor.map(|(i, _)| i).unwrap_or(0);
-        let start_offset = self.cursor.map(|(_, off)| off + 1).unwrap_or(0); // Start AFTER current cursor
+        let start_offset = self.cursor.map(|(_, off)| off + 1).unwrap_or(0);
 
         if let Some(file) = &self.files[target_idx] {
             let needle: Vec<u8> = if self.search_hex_mode {
-                // Parse hex string "DEAD" -> [0xDE, 0xAD]
                 let cleaned: String = self.search_query.chars().filter(|c| c.is_ascii_hexdigit()).collect();
                 cleaned
                     .as_bytes()
@@ -123,18 +124,15 @@ impl HexApp {
                     })
                     .collect()
             } else {
-                // ASCII Search
                 self.search_query.as_bytes().to_vec()
             };
 
             if needle.is_empty() { return; }
 
-            // Find first occurrence after start_offset
             let found = file.data[start_offset..]
                 .windows(needle.len())
                 .position(|window| window == needle)
                 .map(|p| p + start_offset)
-                // If not found, wrap around to beginning
                 .or_else(|| {
                     file.data[..start_offset]
                         .windows(needle.len())
@@ -164,7 +162,6 @@ impl HexApp {
 
         if let Ok(off) = offset {
             self.jump_to_offset(off);
-            // Move cursor there too
             let target_idx = self.cursor.map(|(i, _)| i).unwrap_or(0);
             self.cursor = Some((target_idx, off));
         }
@@ -172,19 +169,13 @@ impl HexApp {
 
     fn jump_to_offset(&mut self, offset: usize) {
         let row = offset / BYTES_PER_ROW;
-        // Approximation: Row height is ~14.0 (font size) + spacing.
-        // We set the common scroll offset roughly to that row.
-        // A more precise way requires calculating row height dynamically,
-        // but for this structure, pure math works well enough.
-        // We assume ~20px per row (font + spacing)
-        let estimated_y = (row as f32) * 18.0; // 14pt monospace + padding
+        let estimated_y = (row as f32) * 18.0;
         self.common_scroll_offset = estimated_y;
     }
 
-    // --- Input Handling ---
+    // --- Input ---
 
     fn handle_input(&mut self, ctx: &egui::Context) {
-        // Only capture input if we are NOT typing in a text box (like search)
         if ctx.wants_keyboard_input() { return; }
 
         if let Some((idx, offset)) = self.cursor {
@@ -206,18 +197,13 @@ impl HexApp {
                     let current_byte = file.data[offset];
 
                     if !self.cursor_low_nibble {
-                        // Edit High Nibble: Replace top 4 bits, clear bottom?
-                        // Or just overwrite top? Usually overwrite top, keep bottom.
-                        // Formula: (val << 4) | (current & 0x0F)
+                        // High Nibble
                         file.data[offset] = (val << 4) | (current_byte & 0x0F);
-                        self.cursor_low_nibble = true; // Move to low part
+                        self.cursor_low_nibble = true;
                     } else {
-                        // Edit Low Nibble: Keep top, replace bottom
-                        // Formula: (current & 0xF0) | val
+                        // Low Nibble
                         file.data[offset] = (current_byte & 0xF0) | val;
-
-                        // Advance Cursor!
-                        self.cursor_low_nibble = false; // Reset for next byte
+                        self.cursor_low_nibble = false;
                         if offset + 1 < file.data.len() {
                             self.cursor = Some((idx, offset + 1));
                         }
@@ -235,7 +221,6 @@ impl HexApp {
             ui.heading("hexscope");
             ui.separator();
 
-            // File Controls
             if ui.button("📂 File 1").clicked() { self.open_file(0); }
             if self.files[0].as_ref().map_or(false, |f| f.dirty) {
                 if ui.button("💾 Save 1").clicked() { self.save_file(0); }
@@ -255,7 +240,6 @@ impl HexApp {
 
             ui.separator();
 
-            // Search Block
             ui.label("🔍");
             let search_resp = ui.add(egui::TextEdit::singleline(&mut self.search_query).desired_width(100.0).hint_text("Search..."));
             if search_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -269,11 +253,40 @@ impl HexApp {
 
             ui.separator();
 
-            // Jump Block
             ui.label("Px");
             let jump_resp = ui.add(egui::TextEdit::singleline(&mut self.jump_offset_str).desired_width(60.0).hint_text("Offset"));
             if jump_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.perform_jump();
+            }
+        });
+    }
+
+    fn render_bottom_bar(&self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if let Some((idx, offset)) = self.cursor {
+                if let Some(file) = &self.files[idx] {
+                    if offset < file.data.len() {
+                        let val = file.data[offset];
+                        let fname = file.path.as_ref()
+                            .and_then(|p| p.file_name())
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or("Untitled".into());
+
+                        // File Info
+                        ui.label(egui::RichText::new(format!("File: {}", fname)).strong());
+                        ui.separator();
+
+                        // Offset Info
+                        ui.label(format!("Offset: 0x{:08X} ({})", offset, offset));
+                        ui.separator();
+
+                        // Value Info
+                        let char_display = if val >= 32 && val <= 126 { val as char } else { '.' };
+                        ui.label(format!("Value: 0x{:02X} ({}) '{}'", val, val, char_display));
+                    }
+                }
+            } else {
+                ui.label("Ready");
             }
         });
     }
@@ -363,18 +376,16 @@ impl HexApp {
                 let abs_idx = offset + i;
                 let mut text = egui::RichText::new(format!("{:02X}", byte));
 
-                // Diff color
                 if let Some(comp) = compare_chunk {
                     if i < comp.len() && comp[i] != byte {
                         text = text.color(egui::Color32::LIGHT_RED).strong();
                     }
                 }
 
-                // Selection / Cursor Logic
                 if self.cursor == Some((file_index, abs_idx)) {
                      text = text.background_color(egui::Color32::DARK_BLUE).color(egui::Color32::WHITE);
                      if self.cursor_low_nibble {
-                         text = text.underline(); // Underline to indicate nibble position (subtle hint)
+                         text = text.underline();
                      }
                 }
 
@@ -383,7 +394,7 @@ impl HexApp {
                 let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
                 if resp.clicked() {
                     self.cursor = Some((file_index, abs_idx));
-                    self.cursor_low_nibble = false; // Reset to start of byte on click
+                    self.cursor_low_nibble = false;
                 }
             }
         });
@@ -428,6 +439,11 @@ impl eframe::App for HexApp {
             self.render_top_bar(ui);
         });
 
+        // ADDED: Bottom Bar for Offset Status
+        egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
+            self.render_bottom_bar(ui);
+        });
+
         egui::CentralPanel::default().show(ctx, |ui| {
             let has_f1 = self.files[0].is_some();
             let has_f2 = self.files[1].is_some();
@@ -442,7 +458,6 @@ impl eframe::App for HexApp {
             let scroll_arg = if self.sync_scroll { Some(self.common_scroll_offset) } else { None };
 
             if has_f1 && has_f2 {
-                // Split View
                 ui.columns(2, |columns| {
                     let s1 = self.render_hex_pane(&mut columns[0], 0, "view_left", scroll_arg);
                     let s2 = self.render_hex_pane(&mut columns[1], 1, "view_right", scroll_arg);
@@ -453,7 +468,6 @@ impl eframe::App for HexApp {
                     }
                 });
             } else {
-                // Full View (Single File)
                 let active_slot = if has_f1 { 0 } else { 1 };
                 let salt = if has_f1 { "view_left" } else { "view_right" };
                 self.render_hex_pane(ui, active_slot, salt, None);
