@@ -1,13 +1,12 @@
+mod app;
 mod file_buffer;
-mod hex_app;
 
+use crate::app::state::HexApp;
 use eframe::egui;
-use hex_app::HexApp;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 800.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]),
         ..Default::default()
     };
 
